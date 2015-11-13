@@ -65,9 +65,9 @@ options:
     default: null
   state:
     description:
-      - Whether to install (C(present), C(latest)), or remove (C(absent)) a package.
+      - Whether to install (C(present), C(latest), C(secured)), or remove (C(absent)) a package.
     required: false
-    choices: [ "present", "latest", "absent" ]
+    choices: [ "present", "latest", "secured", "absent" ]
     default: "present"
   enablerepo:
     description:
@@ -139,6 +139,8 @@ notes:
     "@development-tools" and environment groups are "@^gnome-desktop-environment".
     Use the "yum group list" command to see which category of group the group
     you want to install falls into.'
+  - You can only use the state 'secured' against package '*'. You must also
+    have the security plugin installed.
 # informational: requirements for nodes
 requirements: [ yum ]
 author:
@@ -173,6 +175,9 @@ EXAMPLES = '''
 
 - name: install the 'Gnome desktop' environment group
   yum: name="@^gnome-desktop-environment" state=present
+
+- name: update every package which is marked insecure
+  yum: name="*" state=secured
 '''
 
 # 64k.  Number of bytes to read at a time when manually downloading pkgs via a url
@@ -724,7 +729,7 @@ def remove(module, items, repoq, yum_basecmd, conf_file, en_repos, dis_repos):
 
     return res
 
-def latest(module, items, repoq, yum_basecmd, conf_file, en_repos, dis_repos):
+def latest(module, items, repoq, yum_basecmd, conf_file, en_repos, dis_repos, security_only=no):
 
     res = {}
     res['results'] = []
@@ -741,9 +746,15 @@ def latest(module, items, repoq, yum_basecmd, conf_file, en_repos, dis_repos):
     # determine if we're doing an update all
     if '*' in items:
         update_all = True
+    elif security_only:
+        module.fail_json(msg="The state 'secured' must only be used for package '*'")
 
     # run check-update to see if we have packages pending
-    rc, out, err = module.run_command(yum_basecmd + ['check-update'])
+    if security_only:
+        rc, out, err = module.run_command(yum_basecmd + ['check-update', '--security'])
+    else:
+        rc, out, err = module.run_command(yum_basecmd + ['check-update'])
+
     if rc == 0 and update_all:
         res['results'].append('Nothing to do here, all packages are up to date')
         return res
@@ -766,7 +777,10 @@ def latest(module, items, repoq, yum_basecmd, conf_file, en_repos, dis_repos):
         module.fail_json(**res)
 
     if update_all:
-        cmd = yum_basecmd + ['update']
+        if security_only:
+            cmd = yum_basecmd + ['update', '--security']
+        else:
+            cmd = yum_basecmd + ['update']
         will_update = set(updates.keys())
         will_update_from_other_package = dict()
     else:
@@ -900,7 +914,7 @@ def ensure(module, state, pkgs, conf_file, enablerepo, disablerepo,
         e_cmd = ['--exclude=%s' % exclude]
         yum_basecmd.extend(e_cmd)
 
-    if state in ['installed', 'present', 'latest']:
+    if state in ['installed', 'present', 'secured', 'latest']:
 
         if module.params.get('update_cache'):
             module.run_command(yum_basecmd + ['makecache'])
@@ -933,6 +947,10 @@ def ensure(module, state, pkgs, conf_file, enablerepo, disablerepo,
         if disable_gpg_check:
             yum_basecmd.append('--nogpgcheck')
         res = latest(module, pkgs, repoq, yum_basecmd, conf_file, en_repos, dis_repos)
+    elif state == 'secured':
+        if disable_gpg_check:
+            yum_basecmd.append('--nogpgcheck')
+        res = latest(module, pkgs, repoq, yum_basecmd, conf_file, en_repos, dis_repos, security_only=yes)
     else:
         # should be caught by AnsibleModule argument_spec
         module.fail_json(msg="we should never get here unless this all"
@@ -958,7 +976,7 @@ def main():
             name=dict(aliases=['pkg'], type="list"),
             exclude=dict(required=False, default=None),
             # removed==absent, installed==present, these are accepted as aliases
-            state=dict(default='installed', choices=['absent','present','installed','removed','latest']),
+            state=dict(default='installed', choices=['absent','present','installed','secured','removed','latest']),
             enablerepo=dict(),
             disablerepo=dict(),
             list=dict(),
